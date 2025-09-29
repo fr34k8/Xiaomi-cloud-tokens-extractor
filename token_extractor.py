@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import argparse
 import base64
 import hashlib
@@ -42,7 +43,7 @@ NAME_TO_LEVEL = {
 }
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-ni", "--non_interactive", required=False, help="Non-nteractive mode", action="store_true")
+parser.add_argument("-ni", "--non_interactive", required=False, help="Non-interactive mode", action="store_true")
 parser.add_argument("-u", "--username", required=False, help="Username")
 parser.add_argument("-p", "--password", required=False, help="Password")
 parser.add_argument("-s", "--server", required=False, help="Server", choices=[*SERVERS, ""])
@@ -84,226 +85,19 @@ logging.setLoggerClass(ColorLogger)
 _LOGGER = logging.getLogger("token_extractor")
 
 
-class XiaomiCloudConnector:
+class XiaomiCloudConnector(ABC):
 
-    def __init__(self, username, password):
-        self._username = username
-        self._password = password
+    def __init__(self):
         self._agent = self.generate_agent()
         self._device_id = self.generate_device_id()
         self._session = requests.session()
-        self._sign = None
         self._ssecurity = None
         self.userId = None
-        self._cUserId = None
-        self._passToken = None
-        self._location = None
-        self._code = None
         self._serviceToken = None
 
-    def login_step_1(self):
-        _LOGGER.debug("login_step_1")
-        url = "https://account.xiaomi.com/pass/serviceLogin?sid=xiaomiio&_json=true"
-        headers = {
-            "User-Agent": self._agent,
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        cookies = {
-            "userId": self._username
-        }
-        response = self._session.get(url, headers=headers, cookies=cookies)
-        _LOGGER.debug(response.text)
-        json_resp = self.to_json(response.text)
-        if response.status_code == 200:
-            if "_sign" in json_resp:
-                self._sign = json_resp["_sign"]
-                return True
-            elif "ssecurity" in json_resp:
-                self._ssecurity = json_resp["ssecurity"]
-                self.userId = json_resp["userId"]
-                self._cUserId = json_resp["cUserId"]
-                self._passToken = json_resp["passToken"]
-                self._location = json_resp["location"]
-                self._code = json_resp["code"]
-
-                return True
-
-        return False
-
-    def login_step_2(self) -> bool:
-        _LOGGER.debug("login_step_2")
-        url: str = "https://account.xiaomi.com/pass/serviceLoginAuth2"
-        headers: dict = {
-            "User-Agent": self._agent,
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        fields: dict = {
-            "sid": "xiaomiio",
-            "hash": hashlib.md5(str.encode(self._password)).hexdigest().upper(),
-            "callback": "https://sts.api.io.mi.com/sts",
-            "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
-            "user": self._username,
-            "_sign": self._sign,
-            "_json": "true"
-        }
-        _LOGGER.debug("login_step_2: URL: %s", url)
-        _LOGGER.debug("login_step_2: Fields: %s", fields)
-
-        response = self._session.post(url, headers=headers, params=fields, allow_redirects=False)
-        _LOGGER.debug("login_step_2: Response text: %s", response.text)
-
-        valid: bool = response is not None and response.status_code == 200
-
-        if valid:
-            json_resp: dict = self.to_json(response.text)
-            if "captchaUrl" in json_resp and json_resp["captchaUrl"] is not None:
-                if args.non_interactive:
-                    parser.error("Captcha solution required, rerun in interactive mode")
-                captcha_code: str = self.handle_captcha(json_resp["captchaUrl"])
-                if not captcha_code:
-                    _LOGGER.debug("Could not solve captcha.")
-                    return False
-                # Add captcha code to the fields and retry
-                fields["captCode"] = captcha_code
-                _LOGGER.debug("Retrying login with captcha.")
-                response = self._session.post(url, headers=headers, params=fields, allow_redirects=False)
-                _LOGGER.debug("login_step_2: Retry Response text: %s", response.text[:1000])
-                if response is not None and response.status_code == 200:
-                    json_resp = self.to_json(response.text)
-                else:
-                    _LOGGER.error("Login failed even after captcha.")
-                    return False
-                if "code" in json_resp and json_resp["code"] == 87001:
-                    print_if_interactive("Invalid captcha.")
-                    return False
-
-            valid = "ssecurity" in json_resp and len(str(json_resp["ssecurity"])) > 4
-            if valid:
-                self._ssecurity = json_resp["ssecurity"]
-                self.userId = json_resp.get("userId", None)
-                self._cUserId = json_resp.get("cUserId", None)
-                self._passToken = json_resp.get("passToken", None)
-                self._location = json_resp.get("location", None)
-                self._code = json_resp.get("code", None)
-            else:
-                if "notificationUrl" in json_resp:
-                    if args.non_interactive:
-                        parser.error("2FA solution required, rerun in interactive mode")
-                    verify_url = json_resp["notificationUrl"]
-                    return self.do_2fa_email_flow(verify_url)
-                else:
-                    _LOGGER.error("login_step_2: Login failed, server returned: %s", json_resp)
-        else:
-            _LOGGER.error("login_step_2: HTTP status: %s; Response: %s", response.status_code, response.text[:500])
-        return valid
-
-    def verify_ticket(self, verify_url, ticket):
-        path = 'identity/authStart'
-        if path not in verify_url:
-            return None
-        resp = self._session.get(verify_url.replace(path, 'identity/list'))
-        identity_session = resp.cookies.get('identity_session')
-        if not identity_session:
-            return False
-        data = self.to_json(resp.text) or {}
-        flag = data.get('flag', 4)
-        options = data.get('options', [flag])
-
-        for flag in options:
-            api = {
-                4: '/identity/auth/verifyPhone',
-                8: '/identity/auth/verifyEmail',
-            }.get(flag)
-            if not api:
-                continue
-            resp = self._session.post(
-                'https://account.xiaomi.com' + api,
-                params={
-                    '_dc': int(time.time() * 1000),
-                },
-                data={
-                    '_flag': flag,
-                    'ticket': ticket,
-                    'trust': 'true',
-                    '_json': 'true',
-                },
-                cookies={
-                    'identity_session': identity_session,
-                },
-            )
-            data = self.to_json(resp.text)
-            if data.get('code') == 0:
-                return data
-
-        return False
-
-    def login_step_3(self):
-        _LOGGER.debug("login_step_3")
-        headers = {
-            "User-Agent": self._agent,
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        response = self._session.get(self._location, headers=headers)
-        _LOGGER.debug(response.text)
-        if response.status_code == 200:
-            self._serviceToken = response.cookies.get("serviceToken")
-        return response.status_code == 200
-
-    def handle_captcha(self, captcha_url: str) -> str:
-        # Full URL in case it's relative
-        if captcha_url.startswith("/"):
-            captcha_url = "https://account.xiaomi.com" + captcha_url
-
-        _LOGGER.debug("Downloading captcha image from: %s", captcha_url)
-        response = self._session.get(captcha_url, stream=False)
-        if response.status_code != 200:
-            _LOGGER.error("Unable to fetch captcha image.")
-            return ""
-
-        print_if_interactive(f"{Fore.YELLOW}Captcha verification required.")
-        try:
-            # Try to serve an image file
-            start_image_server(response.content)
-            print_if_interactive(f"Captcha image URL: {Fore.BLUE}http://{args.host or '127.0.0.1'}:31415")
-        except Exception as e1:
-            _LOGGER.debug(e1)
-            # Save image to a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                tmp.write(response.content)
-                tmp_path: str = tmp.name
-            print_if_interactive(f"Captcha image saved at: {tmp_path}")
-            try:
-                img = Image.open(tmp_path)
-                img.show()
-            except Exception as e2:
-                _LOGGER.debug(e2)
-                print_if_interactive(f"Please open {tmp_path} and solve the captcha.")
-
-        # Ask user for a captcha solution
-        print_if_interactive(f"Enter captcha as shown in the image {Fore.BLUE}(case-sensitive){Style.RESET_ALL}:")
-        captcha_solution: str = input().strip()
-        print_if_interactive()
-        return captcha_solution
-
-    def login(self):
-        self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="mi.com")
-        self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="xiaomi.com")
-        self._session.cookies.set("deviceId", self._device_id, domain="mi.com")
-        self._session.cookies.set("deviceId", self._device_id, domain="xiaomi.com")
-
-        if not self.login_step_1():
-            print_if_interactive(f"{Fore.RED}Invalid username.")
-            return False
-
-        if not self.login_step_2():
-            print_if_interactive(f"{Fore.RED}Invalid login or password.")
-            return False
-
-        if self._location and not self._serviceToken and not self.login_step_3():
-            print_if_interactive(f"{Fore.RED}Unable to get service token.")
-            return False
-
-        return True
+    @abstractmethod
+    def login(self) -> bool:
+        pass
 
     def get_homes(self, country):
         url = self.get_api_url(country) + "/v2/homeroom/gethome"
@@ -438,6 +232,186 @@ class XiaomiCloudConnector:
         r.encrypt(bytes(1024))
         return r.encrypt(base64.b64decode(payload))
 
+
+class PasswordXiaomiCloudConnector(XiaomiCloudConnector):
+
+    def __init__(self):
+        super().__init__()
+        self._sign = None
+        self._cUserId = None
+        self._passToken = None
+        self._location = None
+        self._code = None
+
+    def login(self) -> bool:
+        if args.username:
+            self._username = args.username
+        else:
+            print_if_interactive(f"Username {Fore.BLUE}(email, phone number or user ID){Style.RESET_ALL}:")
+            self._username = input()
+        if args.password:
+            self._password = args.password
+        else:
+            print_if_interactive(f"Password {Fore.BLUE}(not displayed for privacy reasons){Style.RESET_ALL}:")
+            self._password = getpass("")
+
+        print_if_interactive()
+        print_if_interactive(f"{Fore.BLUE}Logging in...")
+        print_if_interactive()
+
+        self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="mi.com")
+        self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="xiaomi.com")
+        self._session.cookies.set("deviceId", self._device_id, domain="mi.com")
+        self._session.cookies.set("deviceId", self._device_id, domain="xiaomi.com")
+
+        if not self.login_step_1():
+            print_if_interactive(f"{Fore.RED}Invalid username.")
+            return False
+
+        if not self.login_step_2():
+            print_if_interactive(f"{Fore.RED}Invalid login or password.")
+            return False
+
+        if self._location and not self._serviceToken and not self.login_step_3():
+            print_if_interactive(f"{Fore.RED}Unable to get service token.")
+            return False
+
+        return True
+
+    def login_step_1(self):
+        _LOGGER.debug("login_step_1")
+        url = "https://account.xiaomi.com/pass/serviceLogin?sid=xiaomiio&_json=true"
+        headers = {
+            "User-Agent": self._agent,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        cookies = {
+            "userId": self._username
+        }
+        response = self._session.get(url, headers=headers, cookies=cookies)
+        _LOGGER.debug(response.text)
+        json_resp = self.to_json(response.text)
+        if response.status_code == 200:
+            if "_sign" in json_resp:
+                self._sign = json_resp["_sign"]
+                return True
+            elif "ssecurity" in json_resp:
+                self._ssecurity = json_resp["ssecurity"]
+                self.userId = json_resp["userId"]
+                self._cUserId = json_resp["cUserId"]
+                self._passToken = json_resp["passToken"]
+                self._location = json_resp["location"]
+                self._code = json_resp["code"]
+
+                return True
+
+        return False
+
+    def login_step_2(self) -> bool:
+        _LOGGER.debug("login_step_2")
+        url: str = "https://account.xiaomi.com/pass/serviceLoginAuth2"
+        headers: dict = {
+            "User-Agent": self._agent,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        fields: dict = {
+            "sid": "xiaomiio",
+            "hash": hashlib.md5(str.encode(self._password)).hexdigest().upper(),
+            "callback": "https://sts.api.io.mi.com/sts",
+            "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
+            "user": self._username,
+            "_sign": self._sign,
+            "_json": "true"
+        }
+        _LOGGER.debug("login_step_2: URL: %s", url)
+        _LOGGER.debug("login_step_2: Fields: %s", fields)
+
+        response = self._session.post(url, headers=headers, params=fields, allow_redirects=False)
+        _LOGGER.debug("login_step_2: Response text: %s", response.text)
+
+        valid: bool = response is not None and response.status_code == 200
+
+        if valid:
+            json_resp: dict = self.to_json(response.text)
+            if "captchaUrl" in json_resp and json_resp["captchaUrl"] is not None:
+                if args.non_interactive:
+                    parser.error("Captcha solution required, rerun in interactive mode")
+                captcha_code: str = self.handle_captcha(json_resp["captchaUrl"])
+                if not captcha_code:
+                    _LOGGER.debug("Could not solve captcha.")
+                    return False
+                # Add captcha code to the fields and retry
+                fields["captCode"] = captcha_code
+                _LOGGER.debug("Retrying login with captcha.")
+                response = self._session.post(url, headers=headers, params=fields, allow_redirects=False)
+                _LOGGER.debug("login_step_2: Retry Response text: %s", response.text[:1000])
+                if response is not None and response.status_code == 200:
+                    json_resp = self.to_json(response.text)
+                else:
+                    _LOGGER.error("Login failed even after captcha.")
+                    return False
+                if "code" in json_resp and json_resp["code"] == 87001:
+                    print_if_interactive("Invalid captcha.")
+                    return False
+
+            valid = "ssecurity" in json_resp and len(str(json_resp["ssecurity"])) > 4
+            if valid:
+                self._ssecurity = json_resp["ssecurity"]
+                self.userId = json_resp.get("userId", None)
+                self._cUserId = json_resp.get("cUserId", None)
+                self._passToken = json_resp.get("passToken", None)
+                self._location = json_resp.get("location", None)
+                self._code = json_resp.get("code", None)
+            else:
+                if "notificationUrl" in json_resp:
+                    if args.non_interactive:
+                        parser.error("2FA solution required, rerun in interactive mode")
+                    verify_url = json_resp["notificationUrl"]
+                    return self.do_2fa_email_flow(verify_url)
+                else:
+                    _LOGGER.error("login_step_2: Login failed, server returned: %s", json_resp)
+        else:
+            _LOGGER.error("login_step_2: HTTP status: %s; Response: %s", response.status_code, response.text[:500])
+        return valid
+
+    def login_step_3(self):
+        _LOGGER.debug("login_step_3")
+        headers = {
+            "User-Agent": self._agent,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        response = self._session.get(self._location, headers=headers)
+        _LOGGER.debug(response.text)
+        if response.status_code == 200:
+            self._serviceToken = response.cookies.get("serviceToken")
+        return response.status_code == 200
+
+    def handle_captcha(self, captcha_url: str) -> str:
+        # Full URL in case it's relative
+        if captcha_url.startswith("/"):
+            captcha_url = "https://account.xiaomi.com" + captcha_url
+
+        _LOGGER.debug("Downloading captcha image from: %s", captcha_url)
+        response = self._session.get(captcha_url, stream=False)
+        if response.status_code != 200:
+            _LOGGER.error("Unable to fetch captcha image.")
+            return ""
+
+        print_if_interactive(f"{Fore.YELLOW}Captcha verification required.")
+        present_image_image(
+            response.content,
+            message_url = f"Image URL: {Fore.BLUE}http://{args.host or '127.0.0.1'}:31415",
+            message_file_saved = "Captcha image saved at: {}",
+            message_manually_open_file = "Please open {} and solve the captcha."
+        )
+
+        # Ask user for a captcha solution
+        print_if_interactive(f"Enter captcha as shown in the image {Fore.BLUE}(case-sensitive){Style.RESET_ALL}:")
+        captcha_solution: str = input().strip()
+        print_if_interactive()
+        return captcha_solution
+
+
     def do_2fa_email_flow(self, notification_url: str) -> bool:
         """
         Handles the email-based 2FA flow and extracts ssecurity + serviceToken.
@@ -518,7 +492,6 @@ class XiaomiCloudConnector:
             _LOGGER.error("verifyEmail failed: status=%s body=%s", r.status_code, r.text[:500])
             return False
 
-        finish_loc = None
         try:
             jr = r.json()
             _LOGGER.debug("verifyEmail response status=%s json=%s", r.status_code, jr)
@@ -548,7 +521,6 @@ class XiaomiCloudConnector:
         if not finish_loc:
             _LOGGER.error("Unable to determine finish location after verifyEmail.")
             return False
-
 
         # First hop: GET identity/result/check (do NOT follow redirects to inspect Location)
         if "identity/result/check" in finish_loc:
@@ -629,6 +601,154 @@ class XiaomiCloudConnector:
             self._session.cookies.set("serviceToken", token, domain=d)
             self._session.cookies.set("yetAnotherServiceToken", token, domain=d)
 
+
+class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
+
+    def __init__(self):
+        super().__init__()
+        self._cUserId = None
+        self._pass_token = None
+        self._location = None
+        self._qr_image_url = None
+        self._long_polling_url = None
+
+    def login(self) -> bool:
+
+        if not self.login_step_1():
+            print_if_interactive(f"{Fore.RED}Unable to get login message.")
+            return False
+
+        if not self.login_step_2():
+            print_if_interactive(f"{Fore.RED}Unable to get login QR Image.")
+            return False
+
+        if not self.login_step_3():
+            print_if_interactive(f"{Fore.RED}Unable to login.")
+            return False
+
+        if not self.login_step_4():
+            print_if_interactive(f"{Fore.RED}Unable to get service token.")
+            return False
+
+        return True
+
+    def login_step_1(self) -> bool:
+        _LOGGER.debug("login_step_1")
+        url = "https://account.xiaomi.com/longPolling/loginUrl"
+        data = {
+            '_qrsize': '480',
+            'qs': '%3Fsid%3Dxiaomiio%26_json%3Dtrue',
+            'callback': "https://sts.api.io.mi.com/sts",
+            '_hasLogo': 'false',
+            'sid': 'xiaomiio',
+            'serviceParam': '',
+            '_locale': 'en_GB',
+            '_dc': str(int(time.time() * 1000))
+        }
+
+        response = self._session.get(url, params=data)
+        _LOGGER.debug(response.text)
+
+        if response.status_code == 200:
+            response_data = self.to_json(response.text)
+            if "qr" in response_data:
+                self._qr_image_url = response_data['qr']
+                self._long_polling_url = response_data['lp']
+                self._timeout = response_data['timeout']
+                return True
+        return False
+
+    def login_step_2(self) -> bool:
+        _LOGGER.debug("login_step_2")
+        url = self._qr_image_url
+        _LOGGER.debug("login_step_2: Image URL: %s", url)
+
+        response = self._session.get(url)
+
+        valid: bool = response is not None and response.status_code == 200
+
+        if valid:
+            print_if_interactive(f"{Fore.BLUE}Please scan the following QR code to log in.")
+
+            present_image_image(
+                response.content,
+                message_url = f"QR code URL: {Fore.BLUE}http://{args.host or '127.0.0.1'}:31415",
+                message_file_saved = "QR code image saved at: {}",
+                message_manually_open_file = "Please open {} and scan the QR code."
+            )
+            print_if_interactive()
+            return True
+        else:
+            _LOGGER.error("login_step_2: HTTP status: %s; Response: %s", response.status_code, response.text[:500])
+        return False
+
+    def login_step_3(self) -> bool:
+        _LOGGER.debug("login_step_3")
+
+        url = self._long_polling_url
+        _LOGGER.debug("Long polling URL: " + url)
+
+        start_time = time.time()
+        # Start long polling
+        while True:
+            try:
+                response = self._session.get(url, timeout=10)
+            except requests.exceptions.Timeout:
+                _LOGGER.debug("Long polling timed out, retrying...")
+                if time.time() - start_time > self._timeout:
+                    _LOGGER.debug("Long polling timed out after {} seconds.".format(self._timeout))
+                    break
+                continue
+            except requests.exceptions.RequestException as e:
+                _LOGGER.error(f"An error occurred: {e}")
+                break
+
+            if response.status_code == 200:
+                break
+            else:
+                _LOGGER.error("Long polling failed, retrying...")
+
+        if response.status_code != 200:
+            _LOGGER.error("Long polling failed with status code: " + str(response.status_code))
+            return False
+
+        _LOGGER.debug("Login successful!")
+        _LOGGER.debug("Response data:")
+
+        response_data = self.to_json(response.text)
+        _LOGGER.debug(response_data)
+
+        self.userId = response_data['userId']
+        self._ssecurity = response_data['ssecurity']
+        self._cUserId = response_data['cUserId']
+        self._pass_token = response_data['passToken']
+        self._location = response_data['location']
+
+        _LOGGER.debug("User ID: " + str(self.userId))
+        _LOGGER.debug("Ssecurity: " + str(self._ssecurity))
+        _LOGGER.debug("CUser ID: " + str(self._cUserId))
+        _LOGGER.debug("Pass token: " + str(self._pass_token))
+        _LOGGER.debug("Pass token: " + str(self._location))
+
+        return True
+
+    def login_step_4(self) -> bool:
+        _LOGGER.debug("login_step_4")
+        _LOGGER.debug("Fetching service token...")
+
+        if not (location := self._location):
+            _LOGGER.error("No location found.")
+            return False
+
+        response = self._session.get(location, headers={'content-type': 'application/x-www-form-urlencoded'})
+        if response.status_code != 200:
+            return False
+
+        self._serviceToken = response.cookies['serviceToken']
+        _LOGGER.debug("Service token: " + str(self._serviceToken))
+        return True
+
+
 def print_if_interactive(value: str="") -> None:
     if not args.non_interactive:
         print(value)
@@ -674,42 +794,53 @@ def start_image_server(image: bytes) -> None:
     thread.start()
 
 
+def present_image_image(
+        image_content: bytes,
+        message_url: str,
+        message_file_saved: str,
+        message_manually_open_file: str,
+) -> None:
+    try:
+        # Try to serve an image file
+        start_image_server(image_content)
+        print_if_interactive(message_url)
+    except Exception as e1:
+        _LOGGER.debug(e1)
+        # Save image to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            tmp.write(image_content)
+            tmp_path: str = tmp.name
+        print_if_interactive(message_file_saved.format(tmp_path))
+        try:
+            img = Image.open(tmp_path)
+            img.show()
+        except Exception as e2:
+            _LOGGER.debug(e2)
+            print_if_interactive(message_manually_open_file.format(tmp_path))
+
+
 def main() -> None:
     print_banner()
-    servers_str = ", ".join(SERVERS)
-    if args.username:
-        username = args.username
+    if args.non_interactive:
+        connector = PasswordXiaomiCloudConnector()
     else:
-        print_if_interactive(f"Username {Fore.BLUE}(email, phone number or user ID){Style.RESET_ALL}:")
-        username = input()
-    if args.password:
-        password = args.password
-    else:
-        print_if_interactive(f"Password {Fore.BLUE}(not displayed for privacy reasons){Style.RESET_ALL}:")
-        password = getpass("")
-    if args.server is not None:
-        server = args.server
-    elif args.non_interactive:
-        server = ""
-    else:
-        print_if_interactive(f"Server {Fore.BLUE}(one of: {servers_str}; Leave empty to check all available){Style.RESET_ALL}:")
-        server = input()
-        while server not in ["", *SERVERS]:
-            print_if_interactive(f"{Fore.RED}Invalid server provided. Valid values: {servers_str}")
-            print_if_interactive("Server:")
-            server = input()
+        print_if_interactive("Please select a way to log in:")
+        print_if_interactive(f" p{Fore.BLUE} - using password")
+        print_if_interactive(f" q{Fore.BLUE} - using QR code")
+        log_in_method = ""
+        while not log_in_method in ["P", "Q"]:
+            log_in_method = input("p/q: ").upper()
+        if log_in_method == "P":
+            connector = PasswordXiaomiCloudConnector()
+        else:
+            connector = QrCodeXiaomiCloudConnector()
+        print_if_interactive()
 
-    print_if_interactive()
-    if not server == "":
-        servers_to_check = [server]
-    else:
-        servers_to_check = [*SERVERS]
-    connector = XiaomiCloudConnector(username, password)
-    print_if_interactive(f"{Fore.BLUE}Logging in...")
-    print_if_interactive()
     logged = connector.login()
     if logged:
         print_if_interactive(f"{Fore.GREEN}Logged in.")
+        print_if_interactive()
+        servers_to_check = get_servers_to_check()
         print_if_interactive()
         output = []
         for current_server in servers_to_check:
@@ -770,6 +901,29 @@ def main() -> None:
         print_if_interactive()
         print_if_interactive("Press ENTER to finish")
         input()
+
+
+def get_servers_to_check() -> list[str]:
+    servers_str = ", ".join(SERVERS)
+    if args.server is not None:
+        server = args.server
+    elif args.non_interactive:
+        server = ""
+    else:
+        print_if_interactive(
+            f"Select server {Fore.BLUE}(one of: {servers_str}; Leave empty to check all available){Style.RESET_ALL}:")
+        server = input()
+        while server not in ["", *SERVERS]:
+            print_if_interactive(f"{Fore.RED}Invalid server provided. Valid values: {servers_str}")
+            print_if_interactive("Server:")
+            server = input()
+
+    print_if_interactive()
+    if not server == "":
+        servers_to_check = [server]
+    else:
+        servers_to_check = [*SERVERS]
+    return servers_to_check
 
 
 if __name__ == "__main__":
