@@ -8,6 +8,11 @@ set -o errexit  # fail on first error
 set -o nounset  # fail on undef var
 set -o pipefail # fail on first error in pipe
 
+if [ -f "token_extractor.zip" ]; then
+    echo "token_extractor.zip file already exists, please remove it and try again..."
+    exit 1
+fi
+
 curl --silent --fail --show-error --location --remote-name --remote-header-name\
   https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor/releases/latest/download/token_extractor.zip
 unzip token_extractor.zip
