@@ -9,8 +9,8 @@ set -o nounset  # fail on undef var
 set -o pipefail # fail on first error in pipe
 
 if [ -f "token_extractor.zip" ]; then
-    echo "File exists, exiting..."
-    exit 1   # or exit 0 if you want a 'successful' exit
+    echo "token_extractor.zip file already exists, please remove it and try again..."
+    exit 1
 fi
 
 curl --silent --fail --show-error --location --remote-name --remote-header-name\
