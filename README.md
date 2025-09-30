@@ -15,12 +15,13 @@
 
 # Xiaomi Cloud Tokens Extractor
 
-This tool/script retrieves tokens for all devices connected to Xiaomi cloud and encryption keys for BLE devices.
+This tool retrieves tokens for all devices connected to Xiaomi cloud and encryption keys for BLE devices.
 
-You will need to provide Xiaomi Home credentials (_not ones from Roborock app_):
-- username (e-mail or Xiaomi Cloud account ID)
-- password
-- Xiaomi's server region (`cn` - China, `de` - Germany etc.). Leave empty to check all available
+It supports two ways of authentication:
+- username (e-mail/Xiaomi Cloud account ID) & password
+- QR code
+
+After logging in you have to select a Xiaomi's server region (`cn` - China, `de` - Germany etc.). Leave it empty to check all available
 
 In return all of your devices connected to account will be listed, together with their name and IP address.
 
@@ -66,7 +67,8 @@ If you have problems with using this tool try following solutions:
 - Make yourself sure that you provide correct credentials (_e.g. not ones from Roborock app!_)
 - Remove Cloudflare DNS
 - Disable network ad blockers (AdGuard, PiHole, etc.) and restrictions (UniFi Country Restriction etc.)
-- Open 2FA link on the same device that runs Tokens Extractor
+- Check SPAM folders for 2FA e-mail
+- Use QR code authentication instead of username & password
 - Just wait - there is a [limit of 3/5 (depending on region) 2FA requests per day](https://account.xiaomi.com/helpcenter/faq/en_US/02.faqs/05.sms-and-email-verification-code/faq-3)
 
 ## Home Assistant additional tools
