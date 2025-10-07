@@ -76,7 +76,7 @@ class ColorLogger(logging.Logger):
     def __init__(self, name: str) -> None:
         level = NAME_TO_LEVEL[args.log_level.upper()]
         logging.Logger.__init__(self, name, level)
-        color_formatter = ColorFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        color_formatter = ColorFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(color_formatter)
         self.addHandler(handler)
@@ -162,16 +162,16 @@ class XiaomiCloudConnector(ABC):
 
     def signed_nonce(self, nonce):
         hash_object = hashlib.sha256(base64.b64decode(self._ssecurity) + base64.b64decode(nonce))
-        return base64.b64encode(hash_object.digest()).decode('utf-8')
+        return base64.b64encode(hash_object.digest()).decode("utf-8")
 
     @staticmethod
     def signed_nonce_sec(nonce, ssecurity):
         hash_object = hashlib.sha256(base64.b64decode(ssecurity) + base64.b64decode(nonce))
-        return base64.b64encode(hash_object.digest()).decode('utf-8')
+        return base64.b64encode(hash_object.digest()).decode("utf-8")
 
     @staticmethod
     def generate_nonce(millis):
-        nonce_bytes = os.urandom(8) + (int(millis / 60000)).to_bytes(4, byteorder='big')
+        nonce_bytes = os.urandom(8) + (int(millis / 60000)).to_bytes(4, byteorder="big")
         return base64.b64encode(nonce_bytes).decode()
 
     @staticmethod
@@ -202,17 +202,17 @@ class XiaomiCloudConnector(ABC):
             signature_params.append(f"{k}={v}")
         signature_params.append(signed_nonce)
         signature_string = "&".join(signature_params)
-        return base64.b64encode(hashlib.sha1(signature_string.encode('utf-8')).digest()).decode()
+        return base64.b64encode(hashlib.sha1(signature_string.encode("utf-8")).digest()).decode()
 
     @staticmethod
     def generate_enc_params(url, method, signed_nonce, nonce, params, ssecurity):
-        params['rc4_hash__'] = XiaomiCloudConnector.generate_enc_signature(url, method, signed_nonce, params)
+        params["rc4_hash__"] = XiaomiCloudConnector.generate_enc_signature(url, method, signed_nonce, params)
         for k, v in params.items():
             params[k] = XiaomiCloudConnector.encrypt_rc4(signed_nonce, v)
         params.update({
-            'signature': XiaomiCloudConnector.generate_enc_signature(url, method, signed_nonce, params),
-            'ssecurity': ssecurity,
-            '_nonce': nonce,
+            "signature": XiaomiCloudConnector.generate_enc_signature(url, method, signed_nonce, params),
+            "ssecurity": ssecurity,
+            "_nonce": nonce,
         })
         return params
 
@@ -610,6 +610,7 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
         self._pass_token = None
         self._location = None
         self._qr_image_url = None
+        self._login_url = None
         self._long_polling_url = None
 
     def login(self) -> bool:
@@ -636,14 +637,14 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
         _LOGGER.debug("login_step_1")
         url = "https://account.xiaomi.com/longPolling/loginUrl"
         data = {
-            '_qrsize': '480',
-            'qs': '%3Fsid%3Dxiaomiio%26_json%3Dtrue',
-            'callback': "https://sts.api.io.mi.com/sts",
-            '_hasLogo': 'false',
-            'sid': 'xiaomiio',
-            'serviceParam': '',
-            '_locale': 'en_GB',
-            '_dc': str(int(time.time() * 1000))
+            "_qrsize": "480",
+            "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
+            "callback": "https://sts.api.io.mi.com/sts",
+            "_hasLogo": "false",
+            "sid": "xiaomiio",
+            "serviceParam": "",
+            "_locale": "en_GB",
+            "_dc": str(int(time.time() * 1000))
         }
 
         response = self._session.get(url, params=data)
@@ -652,9 +653,10 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
         if response.status_code == 200:
             response_data = self.to_json(response.text)
             if "qr" in response_data:
-                self._qr_image_url = response_data['qr']
-                self._long_polling_url = response_data['lp']
-                self._timeout = response_data['timeout']
+                self._qr_image_url = response_data["qr"]
+                self._login_url = response_data["loginUrl"]
+                self._long_polling_url = response_data["lp"]
+                self._timeout = response_data["timeout"]
                 return True
         return False
 
@@ -676,6 +678,9 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
                 message_file_saved = "QR code image saved at: {}",
                 message_manually_open_file = "Please open {} and scan the QR code."
             )
+            print_if_interactive()
+            print_if_interactive(f"{Fore.BLUE}Alternatively you can visit the following URL:")
+            print_if_interactive(f"{Fore.BLUE}  {self._login_url}")
             print_if_interactive()
             return True
         else:
@@ -718,11 +723,11 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
         response_data = self.to_json(response.text)
         _LOGGER.debug(response_data)
 
-        self.userId = response_data['userId']
-        self._ssecurity = response_data['ssecurity']
-        self._cUserId = response_data['cUserId']
-        self._pass_token = response_data['passToken']
-        self._location = response_data['location']
+        self.userId = response_data["userId"]
+        self._ssecurity = response_data["ssecurity"]
+        self._cUserId = response_data["cUserId"]
+        self._pass_token = response_data["passToken"]
+        self._location = response_data["location"]
 
         _LOGGER.debug("User ID: " + str(self.userId))
         _LOGGER.debug("Ssecurity: " + str(self._ssecurity))
@@ -740,11 +745,11 @@ class QrCodeXiaomiCloudConnector(XiaomiCloudConnector):
             _LOGGER.error("No location found.")
             return False
 
-        response = self._session.get(location, headers={'content-type': 'application/x-www-form-urlencoded'})
+        response = self._session.get(location, headers={"content-type": "application/x-www-form-urlencoded"})
         if response.status_code != 200:
             return False
 
-        self._serviceToken = response.cookies['serviceToken']
+        self._serviceToken = response.cookies["serviceToken"]
         _LOGGER.debug("Service token: " + str(self._serviceToken))
         return True
 
@@ -785,7 +790,7 @@ def start_image_server(image: bytes) -> None:
         def log_message(self, msg, *args) -> None:
             _LOGGER.debug(msg, *args)
 
-    httpd = HTTPServer(('', 31415), ImgHttpHandler)
+    httpd = HTTPServer(("", 31415), ImgHttpHandler)
     _LOGGER.info("server address: %s", httpd.server_address)
     _LOGGER.info("hostname: %s", socket.gethostname())
 
@@ -847,18 +852,18 @@ def main() -> None:
             all_homes = []
             homes = connector.get_homes(current_server)
             if homes is not None:
-                for h in homes['result']['homelist']:
-                    all_homes.append({'home_id': h['id'], 'home_owner': connector.userId})
+                for h in homes["result"]["homelist"]:
+                    all_homes.append({"home_id": h["id"], "home_owner": connector.userId})
             dev_cnt = connector.get_dev_cnt(current_server)
             if dev_cnt is not None:
                 for h in dev_cnt["result"]["share"]["share_family"]:
-                    all_homes.append({'home_id': h['home_id'], 'home_owner': h['home_owner']})
+                    all_homes.append({"home_id": h["home_id"], "home_owner": h["home_owner"]})
 
             if len(all_homes) == 0:
                 print_if_interactive(f'{Fore.RED}No homes found for server "{current_server}".')
 
             for home in all_homes:
-                devices = connector.get_devices(current_server, home['home_id'], home['home_owner'])
+                devices = connector.get_devices(current_server, home["home_id"], home["home_owner"])
                 home["devices"] = []
                 if devices is not None:
                     if devices["result"]["device_info"] is None or len(devices["result"]["device_info"]) == 0:
