@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-ha_host=$(ha network info --raw-json 2>/dev/null | jq ".data.interfaces[0].ipv4.address[0]" 2>/dev/null | sed "s/\/.*//g" 2>/dev/null | sed "s/\"//g" 2>/dev/null)
+ha_host=$(ha network info --raw-json 2>/dev/null | jq -r '[.data.interfaces[] | select(.ipv4.address[0] != null)][0].ipv4.address[0] | split("/")[0]' 2>/dev/null)
 if [ -z "${ha_host}" ]; then
   ha_host="127.0.0.1"
 fi
